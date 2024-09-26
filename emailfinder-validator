@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+# Email finder using Python for multiple entries in a DataFrame
+import re
+import pandas as pd
+import dns.resolver
+import smtplib
+
+# Load DataFrame
+#new_df = pd.read_csv('input.csv')  # Adjust the path to your input file
+
+# Regex patterns for validation
+name_regex = re.compile(r'^[a-zA-Z]+$')
+domain_regex = re.compile(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+
+def regex_check(regex, name):
+    """Check proper format of first name, last name, and domain using regex."""
+    if not isinstance(name, str):  # Ensure name is a string
+        return False
+    return bool(re.match(regex, name))
+
+def formats(first, last, domain):
+    """Create a list of possible email formats."""
+    emails_list = [
+        first[0] + '@' + domain,                 
+        first[0] + last + '@' + domain,          
+        first[0] + '.' + last + '@' + domain,    
+        first[0] + '_' + last + '@' + domain,    
+        first[0] + '-' + last + '@' + domain,    
+        first + '@' + domain,                     
+        first + last + '@' + domain,              
+        first + '.' + last + '@' + domain,        
+        first + '_' + last + '@' + domain,        
+        first + '-' + last + '@' + domain,        
+        first[0] + last[0] + '@' + domain,        
+        first[0] + '.' + last[0] + '@' + domain,  
+        first[0] + '-' + last[0] + '@' + domain,  
+        first + last[0] + '@' + domain,           
+        first + '.' + last[0] + '@' + domain,     
+        last + '@' + domain,                       
+        last[0] + '@' + domain                     
+    ]
+    return emails_list
+
+def simulate_smtp_connection(mx_hostname, email):
+    """Simulate SMTP connection and check email deliverability."""
+    try:
+        with smtplib.SMTP(host=mx_hostname, port=25, timeout=10) as smtp:
+            smtp.helo('example.com')
+            smtp.mail('infoworkcare@gmail.com')
+            code, message = smtp.rcpt(email)
+            
+            is_deliverable = not (code == 550 or code == 553)
+            is_accept_all = (code == 250)
+            reason = 'accepted_email' if is_deliverable else 'rejected_email'
+
+            return {
+                'email': email,
+                'isDeliverable': is_deliverable,
+                'isAcceptAll': is_accept_all,
+                'reason': reason
+            }
+
+    except (smtplib.SMTPException, ConnectionError):
+        return {
+            'email': email,
+            'isDeliverable': False,
+            'isAcceptAll': False,
+            'reason': 'connection_failed'
+        }
+    except Exception as e:
+        print(f'Error: {e}')
+        return {
+            'email': email,
+            'isDeliverable': False,
+            'isAcceptAll': False,
+            'reason': 'timeout'
+        }
+
+def verify_email(email):
+    """Verify email by resolving MX records and using SMTP simulation."""
+    domain = email.split('@')[1]  # Extract domain from email
+    try:
+        # Resolve the domain's MX records
+        records = dns.resolver.resolve(domain, 'MX')
+        mx_records = [str(record.exchange) for record in records]
+
+        for mx_hostname in mx_records:
+            result = simulate_smtp_connection(mx_hostname, email)
+            if result['isDeliverable']:
+                return result  # Return the valid email result
+        return None  # Return None if no valid MX records found
+    except Exception as e:
+        print(f'Error verifying email: {email}, {e}')
+        return None  # Handle any other exceptions
+
+def verify_bulk_emails(email_list):
+    """Verify a list of emails."""
+    results = []
+    for email in email_list:
+        result = verify_email(email)
+        if result:
+            results.append(result)
+    return results
+
+def main():
+    email_results = []  # To store the results
+
+    # Prepare to collect email candidates
+    for index, row in new_df.iterrows():
+        first_name = row['First Name']
+        last_name = row['Last Name']
+        domain_name = row['Domain']
+
+        # Skip if any required fields are missing
+                # Skip if any required fields are missing
+        if pd.isna(first_name) or pd.isna(last_name) or pd.isna(domain_name):
+            email_results.append({
+                'First Name': first_name,
+                'Last Name': last_name,
+                'Domain': domain_name,
+                'Valid Email': 'risky'  # Mark as risky if any name or domain is missing
+            })
+            continue
+        
+        # Regex validation
+        if regex_check(name_regex, first_name) and regex_check(name_regex, last_name) and regex_check(domain_regex, domain_name):
+            # Generate possible email formats
+            emails_list = formats(first_name, last_name, domain_name)
+
+            # Verify all email candidates
+            valid_emails = verify_bulk_emails(emails_list)
+
+            # Collect valid emails from the verification results
+            valid_results = [result for result in valid_emails if result and result['isDeliverable']]
+            result_email = return_valid(valid_results, emails_list)
+        else:
+            result_email = 'risky'  # Invalid names or domain
+
+        email_results.append({
+            'First Name': first_name,
+            'Last Name': last_name,
+            'Domain': domain_name,
+            'Valid Email': result_email
+        })
+
+    # Save results to a CSV file, if desired
+    result_df = pd.DataFrame(email_results)
+    result_df.to_csv('email_verification_results.csv', index=False)
+    print("Email verification completed. Results saved to 'email_verification_results.csv'.")
+
+# Helper function to return results as a string for CSV output
+def return_valid(valid, possible):
+    """Return results as a string for CSV output."""
+    if len(valid) == 0:
+        return 'risky'  # Indicate that no valid email address was found
+    elif len(valid) == 1:
+        return valid[0]['email']  # Return the single valid email if only one is found
+    else:
+        return ', '.join([v['email'] for v in valid])  # Join all valid emails
+
+if __name__ == "__main__":
+    main()
+
