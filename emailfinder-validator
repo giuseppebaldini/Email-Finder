@@ -2,9 +2,34 @@ import re
 import pandas as pd
 import dns.resolver
 import smtplib
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Define your list of IP addresses
+ips = [
+    '188.42.11.127:20000',
+    '188.42.11.130:20000',
+    '188.42.11.131:20000',
+    '172.252.57.38:20000',
+    '172.252.57.39:20000',
+    '172.252.57.40:20000',
+    '172.252.57.41:20000',
+    '172.252.57.42:20000',
+    '172.252.57.43:20000',
+    '172.252.57.44:20000',
+    '172.252.57.45:20000',
+    '172.252.57.46:20000',
+    '172.252.57.47:20000',
+    '172.252.57.48:20000',
+    '172.252.57.49:20000',
+    '172.252.57.50:20000',
+    '172.252.57.51:20000',
+    '172.252.57.52:20000',
+    '172.252.57.53:20000',
+    '172.252.57.54:20000',
+]
 
 # Load DataFrame
-#new_df = pd.read_csv('input.csv')  # Adjust the path to your input file
+# new_df = pd.read_csv('input.csv')  # Adjust the path to your input file
 
 # Regex patterns for validation
 name_regex = re.compile(r'^[a-zA-Z]+$')
@@ -18,7 +43,7 @@ def regex_check(regex, name):
 
 def formats(first, last, domain):
     """Create a list of possible email formats."""
-    emails_list = [
+    return [
         f"{first[0]}@{domain}",
         f"{first[0]}{last}@{domain}",
         f"{first[0]}.{last}@{domain}",
@@ -37,37 +62,26 @@ def formats(first, last, domain):
         f"{last}@{domain}",
         f"{last[0]}@{domain}"
     ]
-    return emails_list
 
-def simulate_smtp_connection(mx_hostname, email):
+def simulate_smtp_connection(mx_hostname, email, ip):
     """Simulate SMTP connection and check email deliverability."""
     try:
         with smtplib.SMTP(host=mx_hostname, port=25, timeout=10) as smtp:
-            smtp.helo('example.com')
-            smtp.mail('infoworkcare@gmail.com')
+            smtp.set_debuglevel(0)
+            smtp.helo(ip)  # Use IP for HELO
+            smtp.mail('example@example.com')
             code, message = smtp.rcpt(email)
-
+            
             is_deliverable = not (code == 550 or code == 553)
-            is_accept_all = (code == 250)
-
             return {
                 'email': email,
-                'isDeliverable': is_deliverable,
-                'isAcceptAll': is_accept_all
+                'isDeliverable': is_deliverable
             }
-
-    except (smtplib.SMTPException, ConnectionError):
-        return {
-            'email': email,
-            'isDeliverable': False,
-            'isAcceptAll': False
-        }
     except Exception as e:
-        print(f'Error: {e}')
         return {
             'email': email,
             'isDeliverable': False,
-            'isAcceptAll': False
+            'error': str(e)
         }
 
 def verify_email(email):
@@ -77,26 +91,26 @@ def verify_email(email):
         records = dns.resolver.resolve(domain, 'MX')
         mx_records = [str(record.exchange) for record in records]
 
+        results = []
         for mx_hostname in mx_records:
-            result = simulate_smtp_connection(mx_hostname, email)
-            if result['isDeliverable']:
-                return result  # Return the valid email result
+            # Use a limited number of IPs for each MX record
+            for ip in ips[:3]:  # Use only the first three IPs
+                result = simulate_smtp_connection(mx_hostname, email, ip)
+                results.append(result)
+        
+        # Return the first valid result if exists
+        valid_results = [result for result in results if result['isDeliverable']]
+        if valid_results:
+            return valid_results[0]  # Return the first valid email result
         return None  # Return None if no valid MX records found
     except Exception as e:
         print(f'Error verifying email: {email}, {e}')
         return None  # Handle any other exceptions
 
-def verify_bulk_emails(email_list):
-    """Verify a list of emails."""
-    results = []
-    for email in email_list:
-        result = verify_email(email)
-        if result:
-            results.append(result)
-    return results
-
 def main():
     email_results = []  # To store the results
+    save_counter = 0    # Counter to keep track of rows
+    file_index = 1      # To name the result files
 
     # Prepare to collect email candidates
     for index, row in new_df.iterrows():
@@ -110,8 +124,16 @@ def main():
                 'First Name': first_name,
                 'Last Name': last_name,
                 'Domain': domain_name,
-                'Valid Email': 'risky'
+                'Valid Email': 'risky'  # Mark as risky if any name or domain is missing
             })
+            save_counter += 1
+            if save_counter >= 3:
+                # Save current results to CSV file
+                result_df = pd.DataFrame(email_results)
+                result_df.to_csv(f'email_verification_results_{file_index}.csv', index=False)
+                file_index += 1
+                email_results = []  # Reset results list
+                save_counter = 0  # Reset counter
             continue
         
         # Regex validation
@@ -119,11 +141,17 @@ def main():
             # Generate possible email formats
             emails_list = formats(first_name, last_name, domain_name)
 
-            # Verify all email candidates
-            valid_emails = verify_bulk_emails(emails_list)
+            # Use ThreadPoolExecutor for concurrent email verification
+            with ThreadPoolExecutor(max_workers=5) as executor:  # Limit to 5 concurrent threads
+                futures = {executor.submit(verify_email, email): email for email in emails_list}
+                valid_results = []
+                
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        valid_results.append(result)
 
             # Collect valid emails from the verification results
-            valid_results = [result for result in valid_emails if result and result['isDeliverable']]
             result_email = return_valid(valid_results, emails_list)
         else:
             result_email = 'risky'  # Invalid names or domain
@@ -134,17 +162,30 @@ def main():
             'Domain': domain_name,
             'Valid Email': result_email
         })
+        
+        save_counter += 1
+        if save_counter >= 3:
+            # Save current results to CSV file
+            result_df = pd.DataFrame(email_results)
+            result_df.to_csv(f'email_verification_results_{file_index}.csv', index=False)
+            file_index += 1
+            email_results = []  # Reset results list
+            save_counter = 0  # Reset counter
 
-    # Save results to a CSV file
-    result_df = pd.DataFrame(email_results)
-    result_df.to_csv('email_verification_results.csv', index=False)
-    print("Email verification completed. Results saved to 'email_verification_results.csv'.")
+    # Save any remaining results to a final CSV file
+    if email_results:
+        result_df = pd.DataFrame(email_results)
+        result_df.to_csv(f'email_verification_results_{file_index}.csv', index=False)
+
+    print("Email verification completed. Results saved to CSV files.")
 
 # Helper function to return results as a string for CSV output
 def return_valid(valid, possible):
     """Return results as a string for CSV output."""
     if len(valid) == 0:
         return 'risky'  # Indicate that no valid email address was found
+    elif len(valid) == 1:
+        return valid[0]['email']  # Return the single valid email if only one is found
     else:
         return ', '.join([v['email'] for v in valid])  # Join all valid emails
 
